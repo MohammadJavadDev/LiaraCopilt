@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { deleteConversation, getConversation } from "@/lib/conversations/storage";
 import { useConversations } from "@/lib/conversations/use-conversations";
+import { DEFAULT_SESSION_STATE } from "@/lib/session/memory";
 
 /**
  * Top-level responsive shell (PROJECT_SPEC §9): permanent sidebar + main
@@ -86,6 +87,7 @@ export function CopilotApp() {
             key={activeConversationId}
             conversationId={activeConversationId}
             initialMessages={getConversation(activeConversationId)?.messages ?? []}
+            initialSessionState={getConversation(activeConversationId)?.sessionState ?? DEFAULT_SESSION_STATE}
           />
         </main>
       </div>

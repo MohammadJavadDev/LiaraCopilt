@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
+import { Followups } from "@/components/chat/followups";
 import { Sources } from "@/components/chat/sources";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -106,9 +107,10 @@ interface ChatMessageProps {
   phase: MessagePhase;
   canRetry: boolean;
   onRetry: () => void;
+  onSelectFollowup: (prompt: string) => void;
 }
 
-export function ChatMessage({ message, phase, canRetry, onRetry }: ChatMessageProps) {
+export function ChatMessage({ message, phase, canRetry, onRetry, onSelectFollowup }: ChatMessageProps) {
   const isUser = message.role === "user";
   const text = getMessageText(message);
   const showActions = !isUser && !phase && text.length > 0;
@@ -150,21 +152,25 @@ export function ChatMessage({ message, phase, canRetry, onRetry }: ChatMessagePr
         {!isUser && <Sources message={message} />}
 
         {showActions && (
-          <div className="flex items-center gap-0.5">
-            <CopyButton text={text} label="کپی پاسخ" />
-            {canRetry && (
-              <Tooltip>
-                <TooltipTrigger
-                  render={<Button variant="ghost" size="icon-sm" />}
-                  aria-label="تلاش مجدد"
-                  onClick={onRetry}
-                >
-                  <RotateCcw className="size-3.5" />
-                </TooltipTrigger>
-                <TooltipContent>تلاش مجدد</TooltipContent>
-              </Tooltip>
-            )}
-          </div>
+          <>
+            <Followups message={message} onSelect={onSelectFollowup} />
+
+            <div className="flex items-center gap-0.5">
+              <CopyButton text={text} label="کپی پاسخ" />
+              {canRetry && (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={<Button variant="ghost" size="icon-sm" />}
+                    aria-label="تلاش مجدد"
+                    onClick={onRetry}
+                  >
+                    <RotateCcw className="size-3.5" />
+                  </TooltipTrigger>
+                  <TooltipContent>تلاش مجدد</TooltipContent>
+                </Tooltip>
+              )}
+            </div>
+          </>
         )}
       </div>
     </div>

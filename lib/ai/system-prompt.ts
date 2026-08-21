@@ -25,10 +25,12 @@ function formatChunk(chunk: DocChunk, index: number): string {
 
 /**
  * Builds the full system prompt for a single chat turn: persona + hard
- * grounding/citation rules + prompt-injection guard (spec §10) + the
- * retrieved chunks rendered as clearly-delimited DATA blocks.
+ * grounding/citation rules + prompt-injection guard (spec §10) + agentic
+ * behavior/personalization instructions derived from intent + session
+ * memory (spec §7) + the retrieved chunks rendered as clearly-delimited
+ * DATA blocks.
  */
-export function buildSystemPrompt(chunks: DocChunk[]): string {
+export function buildSystemPrompt(chunks: DocChunk[], agenticInstructions?: string): string {
   const sourcesBlock =
     chunks.length > 0
       ? `منابع بازیابی‌شده از مستندات رسمی لیارا (فقط همین‌ها معتبرند):\n\n${chunks
@@ -36,5 +38,9 @@ export function buildSystemPrompt(chunks: DocChunk[]): string {
           .join("\n\n")}`
       : `منابع بازیابی‌شده: (هیچ منبعی برای این سؤال پیدا نشد. طبق قانون ۲ عمل کن.)`;
 
-  return [PERSONA, GROUNDING_RULES, SECURITY_RULES, sourcesBlock].join("\n\n");
+  const parts = [PERSONA, GROUNDING_RULES, SECURITY_RULES];
+  if (agenticInstructions) parts.push(agenticInstructions);
+  parts.push(sourcesBlock);
+
+  return parts.join("\n\n");
 }

@@ -11,6 +11,7 @@ import { WelcomeScreen } from "@/components/chat/welcome-screen";
 import { Button } from "@/components/ui/button";
 import { getConversation, upsertConversation } from "@/lib/conversations/storage";
 import { DEFAULT_CONVERSATION_TITLE } from "@/lib/conversations/types";
+import type { SessionState } from "@/lib/session/memory";
 
 const PERSIST_DEBOUNCE_MS = 800;
 const NEAR_BOTTOM_THRESHOLD_PX = 96;
@@ -37,6 +38,7 @@ function getFriendlyErrorMessage(error: Error): string {
 interface ChatProps {
   conversationId: string;
   initialMessages: UIMessage[];
+  initialSessionState: SessionState;
 }
 
 /**
@@ -47,11 +49,23 @@ interface ChatProps {
  * Persistence writes flow through `lib/conversations/storage`, which any
  * other component (e.g. the sidebar) can observe reactively via
  * `useConversations()` — no callback prop needed here.
+ *
+ * Also carries the personalization/deploy-step `sessionState` (spec
+ * §7.4/§8): sent back to the server with every turn, refined there, and
+ * streamed back as a transient `data-session-state` part so it can be
+ * persisted alongside the messages for the next turn.
  */
-export function Chat({ conversationId, initialMessages }: ChatProps) {
+export function Chat({ conversationId, initialMessages, initialSessionState }: ChatProps) {
+  const sessionStateRef = useRef<SessionState>(initialSessionState);
+
   const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     id: conversationId,
     messages: initialMessages,
+    onData: (dataPart) => {
+      if (dataPart.type === "data-session-state") {
+        sessionStateRef.current = dataPart.data as SessionState;
+      }
+    },
   });
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -72,6 +86,7 @@ export function Chat({ conversationId, initialMessages }: ChatProps) {
         createdAt: existing?.createdAt ?? Date.now(),
         updatedAt: Date.now(),
         messages,
+        sessionState: sessionStateRef.current,
       });
     };
 
@@ -134,9 +149,16 @@ export function Chat({ conversationId, initialMessages }: ChatProps) {
   const handleSend = useCallback(
     (text: string) => {
       shouldAutoScrollRef.current = true;
-      sendMessage({ text });
+      sendMessage({ text }, { body: { sessionState: sessionStateRef.current } });
     },
     [sendMessage]
+  );
+
+  const handleRegenerate = useCallback(
+    (messageId?: string) => {
+      regenerate({ messageId, body: { sessionState: sessionStateRef.current } });
+    },
+    [regenerate]
   );
 
   const visibleMessages = messages.filter((message) => message.role !== "system");
@@ -164,7 +186,8 @@ export function Chat({ conversationId, initialMessages }: ChatProps) {
                   message={message}
                   phase={phase}
                   canRetry={message.role === "assistant" && !isBusy}
-                  onRetry={() => regenerate({ messageId: message.id })}
+                  onRetry={() => handleRegenerate(message.id)}
+                  onSelectFollowup={handleSend}
                 />
               );
             })}
@@ -175,7 +198,7 @@ export function Chat({ conversationId, initialMessages }: ChatProps) {
                   <AlertTriangle className="size-4 shrink-0" />
                   {getFriendlyErrorMessage(error)}
                 </span>
-                <Button variant="destructive" size="sm" onClick={() => regenerate()}>
+                <Button variant="destructive" size="sm" onClick={() => handleRegenerate()}>
                   تلاش مجدد
                 </Button>
               </div>

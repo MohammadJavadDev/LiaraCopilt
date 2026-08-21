@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { UIMessage } from "ai";
 
+import { DEFAULT_SESSION_STATE, DEPLOYMENT_STEPS, TOPIC_IDS, type SessionState } from "@/lib/session/memory";
+
 /**
  * Loose but real Zod validation for the `useChat` request body (spec §2:
  * "Zod for input/output validation"). We deliberately don't model every
@@ -21,12 +23,26 @@ const uiMessageSchema = z
   })
   .passthrough();
 
+/** Client-echoed session memory (spec §7.4/§8) — validated defensively since it's client-supplied. */
+const sessionStateSchema = z.object({
+  framework: z.string().max(60).nullable(),
+  techLevel: z.enum(["beginner", "advanced"]),
+  mentionedTopics: z.array(z.enum(TOPIC_IDS)).max(TOPIC_IDS.length),
+  deploymentStep: z.enum(DEPLOYMENT_STEPS).nullable(),
+});
+
 export const chatRequestSchema = z.object({
   id: z.string().optional(),
   messages: z.array(uiMessageSchema).min(1, "حداقل یک پیام لازم است.").max(200),
+  sessionState: sessionStateSchema.optional(),
 });
 
 export type ChatRequestBody = z.infer<typeof chatRequestSchema>;
+
+/** Falls back to a fresh session whenever the client hasn't sent one yet (e.g. the conversation's first turn). */
+export function getSessionState(body: ChatRequestBody): SessionState {
+  return body.sessionState ?? DEFAULT_SESSION_STATE;
+}
 
 /** Max number of most-recent messages sent to the model (spec §3/§8: last 6–8 turns, drop older). */
 export const MAX_HISTORY_MESSAGES = 8;

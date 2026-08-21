@@ -74,6 +74,7 @@ export const TECH_KEYWORDS: string[] = [
   "connection pooling",
   "backup",
   "restore",
+  "دیتابیس",
 
   // Networking / domains
   "502",

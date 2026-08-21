@@ -10,12 +10,16 @@ import type { NextRequest } from "next/server";
 import {
   chatRequestSchema,
   getLastUserText,
+  getSessionState,
   toUIMessages,
   trimConversationHistory,
 } from "@/lib/ai/chat";
 import { CHAT_MAX_OUTPUT_TOKENS, CHAT_TEMPERATURE, getStrongModel } from "@/lib/ai/model-config";
 import { buildSystemPrompt } from "@/lib/ai/system-prompt";
 import { retrieveDocs } from "@/lib/docs/retrieve";
+import { detectIntent } from "@/lib/intent/detect-intent";
+import { checkRateLimit } from "@/lib/rate-limit";
+import { buildAgenticInstructions, getFollowupSuggestions, updateSessionState } from "@/lib/session/memory";
 
 // Uses the Node.js filesystem (via lib/docs/load-docs) to read the ingested
 // docs corpus, so this route cannot run on the Edge runtime.
@@ -32,8 +36,21 @@ function logEvent(event: Record<string, unknown>): void {
   console.log(JSON.stringify({ timestamp: new Date().toISOString(), ...event }));
 }
 
+function getClientIp(req: NextRequest): string {
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  if (forwardedFor) return forwardedFor.split(",")[0].trim();
+  return req.headers.get("x-real-ip") ?? "unknown";
+}
+
 export async function POST(req: NextRequest): Promise<Response> {
   const startedAt = Date.now();
+
+  const clientIp = getClientIp(req);
+  const rateLimit = checkRateLimit(clientIp);
+  if (!rateLimit.allowed) {
+    logEvent({ level: "warn", scope: "chat.rate_limit", clientIp, retryAfterMs: rateLimit.retryAfterMs });
+    return errorResponse("تعداد درخواست‌ها زیاد شده. چند لحظه بعد دوباره امتحان کنید.", 429);
+  }
 
   let rawBody: unknown;
   try {
@@ -55,8 +72,15 @@ export async function POST(req: NextRequest): Promise<Response> {
     return errorResponse("پیام کاربر خالی است.", 400);
   }
 
+  // Agentic layer (spec §7): local, zero-cost intent detection + session
+  // memory refinement — never an extra LLM call.
+  const intent = detectIntent(lastUserText);
+  const sessionState = updateSessionState(getSessionState(parsedBody.data), lastUserText, intent);
+  const agenticInstructions = buildAgenticInstructions(intent, sessionState);
+  const followups = getFollowupSuggestions(intent, sessionState);
+
   const retrieved = retrieveDocs(lastUserText);
-  const systemPrompt = buildSystemPrompt(retrieved.map(({ chunk }) => chunk));
+  const systemPrompt = buildSystemPrompt(retrieved.map(({ chunk }) => chunk), agenticInstructions);
 
   let result: ReturnType<typeof streamText>;
   try {
@@ -66,6 +90,17 @@ export async function POST(req: NextRequest): Promise<Response> {
       messages: await convertToModelMessages(toUIMessages(trimmedMessages)),
       maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
       temperature: CHAT_TEMPERATURE,
+      onFinish: ({ finishReason, totalUsage }) => {
+        logEvent({
+          level: "info",
+          scope: "chat.finish",
+          intent,
+          finishReason,
+          inputTokens: totalUsage.inputTokens,
+          outputTokens: totalUsage.outputTokens,
+          totalLatencyMs: Date.now() - startedAt,
+        });
+      },
     });
   } catch (error) {
     logEvent({
@@ -86,9 +121,12 @@ export async function POST(req: NextRequest): Promise<Response> {
   logEvent({
     level: "info",
     scope: "chat.request",
+    clientIp,
+    intent,
     queryLength: lastUserText.length,
     retrievedChunks: retrieved.length,
     uniqueSources: uniqueSources.size,
+    deploymentStep: sessionState.deploymentStep,
     setupLatencyMs: Date.now() - startedAt,
   });
 
@@ -102,6 +140,14 @@ export async function POST(req: NextRequest): Promise<Response> {
           title: `${source.title} — ${source.section}`,
         });
       }
+
+      if (followups.length > 0) {
+        writer.write({ type: "data-followups", data: followups });
+      }
+
+      // Not part of the visible message — the client persists this into the
+      // conversation record and echoes it back on the next turn (spec §7.4/§8).
+      writer.write({ type: "data-session-state", data: sessionState, transient: true });
 
       writer.merge(
         toUIMessageStream({
