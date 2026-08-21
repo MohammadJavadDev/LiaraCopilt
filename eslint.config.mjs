@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Scratch clone of github.com/liara-cloud/docs used by `npm run ingest`.
+    ".cache/**",
   ]),
 ]);
 
