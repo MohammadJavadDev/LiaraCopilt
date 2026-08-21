@@ -1,0 +1,8 @@
+{
+  "platform": "next",
+  "app": "liara-copilot",
+  "port": 3000,
+  "build": {
+    "location": "iran"
+  }
+}

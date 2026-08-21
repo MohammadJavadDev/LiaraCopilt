@@ -18,6 +18,7 @@ import { CHAT_MAX_OUTPUT_TOKENS, CHAT_TEMPERATURE, getStrongModel } from "@/lib/
 import { buildSystemPrompt } from "@/lib/ai/system-prompt";
 import { retrieveDocs } from "@/lib/docs/retrieve";
 import { detectIntent } from "@/lib/intent/detect-intent";
+import { log, recordRequestMetric } from "@/lib/logging";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { buildAgenticInstructions, getFollowupSuggestions, updateSessionState } from "@/lib/session/memory";
 
@@ -32,10 +33,6 @@ function errorResponse(message: string, status: number): Response {
   });
 }
 
-function logEvent(event: Record<string, unknown>): void {
-  console.log(JSON.stringify({ timestamp: new Date().toISOString(), ...event }));
-}
-
 function getClientIp(req: NextRequest): string {
   const forwardedFor = req.headers.get("x-forwarded-for");
   if (forwardedFor) return forwardedFor.split(",")[0].trim();
@@ -44,11 +41,12 @@ function getClientIp(req: NextRequest): string {
 
 export async function POST(req: NextRequest): Promise<Response> {
   const startedAt = Date.now();
-
   const clientIp = getClientIp(req);
+
   const rateLimit = checkRateLimit(clientIp);
   if (!rateLimit.allowed) {
-    logEvent({ level: "warn", scope: "chat.rate_limit", clientIp, retryAfterMs: rateLimit.retryAfterMs });
+    log({ level: "warn", scope: "chat.rate_limit", clientIp, retryAfterMs: rateLimit.retryAfterMs });
+    recordRequestMetric({ timestamp: startedAt, scope: "chat", success: false, latencyMs: Date.now() - startedAt });
     return errorResponse("تعداد درخواست‌ها زیاد شده. چند لحظه بعد دوباره امتحان کنید.", 429);
   }
 
@@ -56,12 +54,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   try {
     rawBody = await req.json();
   } catch {
+    recordRequestMetric({ timestamp: startedAt, scope: "chat", success: false, latencyMs: Date.now() - startedAt });
     return errorResponse("بدنه‌ی درخواست JSON معتبر نیست.", 400);
   }
 
   const parsedBody = chatRequestSchema.safeParse(rawBody);
   if (!parsedBody.success) {
-    logEvent({ level: "warn", scope: "chat.validation", issues: parsedBody.error.issues });
+    log({ level: "warn", scope: "chat.validation", issues: parsedBody.error.issues });
+    recordRequestMetric({ timestamp: startedAt, scope: "chat", success: false, latencyMs: Date.now() - startedAt });
     return errorResponse("ساختار پیام‌های ارسالی نامعتبر است.", 400);
   }
 
@@ -69,6 +69,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const lastUserText = getLastUserText(trimmedMessages);
 
   if (!lastUserText) {
+    recordRequestMetric({ timestamp: startedAt, scope: "chat", success: false, latencyMs: Date.now() - startedAt });
     return errorResponse("پیام کاربر خالی است.", 400);
   }
 
@@ -91,23 +92,34 @@ export async function POST(req: NextRequest): Promise<Response> {
       maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
       temperature: CHAT_TEMPERATURE,
       onFinish: ({ finishReason, totalUsage }) => {
-        logEvent({
+        const latencyMs = Date.now() - startedAt;
+        log({
           level: "info",
           scope: "chat.finish",
           intent,
           finishReason,
           inputTokens: totalUsage.inputTokens,
           outputTokens: totalUsage.outputTokens,
-          totalLatencyMs: Date.now() - startedAt,
+          totalLatencyMs: latencyMs,
+        });
+        recordRequestMetric({
+          timestamp: startedAt,
+          scope: "chat",
+          success: finishReason !== "error",
+          latencyMs,
+          intent,
+          inputTokens: totalUsage.inputTokens,
+          outputTokens: totalUsage.outputTokens,
         });
       },
     });
   } catch (error) {
-    logEvent({
+    log({
       level: "error",
       scope: "chat.model_setup",
       message: error instanceof Error ? error.message : String(error),
     });
+    recordRequestMetric({ timestamp: startedAt, scope: "chat", success: false, latencyMs: Date.now() - startedAt, intent });
     return errorResponse("در دریافت پاسخ مشکلی پیش آمد.", 500);
   }
 
@@ -118,7 +130,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
   }
 
-  logEvent({
+  log({
     level: "info",
     scope: "chat.request",
     clientIp,
@@ -153,10 +165,17 @@ export async function POST(req: NextRequest): Promise<Response> {
         toUIMessageStream({
           stream: result.stream,
           onError: (error) => {
-            logEvent({
+            log({
               level: "error",
               scope: "chat.stream",
               message: error instanceof Error ? error.message : String(error),
+            });
+            recordRequestMetric({
+              timestamp: startedAt,
+              scope: "chat",
+              success: false,
+              latencyMs: Date.now() - startedAt,
+              intent,
             });
             return "در دریافت پاسخ مشکلی پیش آمد.";
           },
@@ -164,7 +183,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       );
     },
     onError: (error) => {
-      logEvent({
+      log({
         level: "error",
         scope: "chat.stream_fatal",
         message: error instanceof Error ? error.message : String(error),

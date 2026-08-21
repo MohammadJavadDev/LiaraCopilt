@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { HELPER_MAX_OUTPUT_TOKENS, getFastModel } from "@/lib/ai/model-config";
 import { DEFAULT_CONVERSATION_TITLE } from "@/lib/conversations/types";
+import { log, recordRequestMetric } from "@/lib/logging";
 
 /**
  * Short conversation-title generation (PROJECT_SPEC §3/§9-b): uses the cheap
@@ -35,6 +36,8 @@ function sanitizeTitle(raw: string): string {
 }
 
 export async function POST(req: Request): Promise<Response> {
+  const startedAt = Date.now();
+
   let rawBody: unknown;
   try {
     rawBody = await req.json();
@@ -48,7 +51,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   try {
-    const { text } = await generateText({
+    const { text, usage } = await generateText({
       model: getFastModel(),
       system: TITLE_SYSTEM_PROMPT,
       prompt: parsed.data.text.slice(0, 2000),
@@ -57,16 +60,22 @@ export async function POST(req: Request): Promise<Response> {
     });
 
     const title = sanitizeTitle(text) || fallbackTitle(parsed.data.text);
+    recordRequestMetric({
+      timestamp: startedAt,
+      scope: "title",
+      success: true,
+      latencyMs: Date.now() - startedAt,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+    });
     return Response.json({ title });
   } catch (error) {
-    console.log(
-      JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: "warn",
-        scope: "title.generate",
-        message: error instanceof Error ? error.message : String(error),
-      })
-    );
+    log({
+      level: "warn",
+      scope: "title.generate",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    recordRequestMetric({ timestamp: startedAt, scope: "title", success: false, latencyMs: Date.now() - startedAt });
     return Response.json({ title: fallbackTitle(parsed.data.text) });
   }
 }
